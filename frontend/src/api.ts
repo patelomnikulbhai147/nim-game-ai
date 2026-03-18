@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type { GameState } from './types';
 
-const API_URL = 'http://localhost:8000';
+const API_BASE = "https://nim-game-backend.onrender.com";
 
 export const api = {
   newGame: async (difficulty: string) => {
