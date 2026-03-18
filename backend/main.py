@@ -1,11 +1,11 @@
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # =======================
-# SIMPLE GAME LOGIC
+# GAME LOGIC
 # =======================
 
 class NimState:
@@ -23,7 +23,7 @@ def apply_move(heaps, move):
     return new_heaps
 
 def choose_ai_move(heaps):
-    # Simple AI: remove 1 from first non-empty heap
+    # Simple AI logic
     for i, h in enumerate(heaps):
         if h > 0:
             return (i, 1)
@@ -40,7 +40,7 @@ class Move(BaseModel):
     remove: int
 
 # =======================
-# LIFESPAN (INIT GAME)
+# APP INIT
 # =======================
 
 @asynccontextmanager
@@ -75,7 +75,7 @@ def home():
 @app.get("/state")
 def get_state():
     if game_state is None:
-        raise HTTPException(404, "No game")
+        raise HTTPException(status_code=404, detail="No active game")
 
     return {
         "heaps": game_state.heaps,
@@ -88,7 +88,10 @@ def get_state():
 def new_game():
     global game_state
     game_state = NimState([5, 3, 7], 1)
-    return {"message": "New game started", "heaps": game_state.heaps}
+    return {
+        "message": "New game started",
+        "heaps": game_state.heaps
+    }
 
 # 👉 HUMAN MOVE
 @app.post("/human_move")
@@ -96,13 +99,13 @@ def human_move(move: Move):
     global game_state
 
     if game_state is None or game_state.player_to_move != 1:
-        raise HTTPException(400, "Not human turn")
+        raise HTTPException(status_code=400, detail="Not human turn")
 
     if move.heap < 0 or move.heap >= len(game_state.heaps):
-        raise HTTPException(400, "Invalid heap")
+        raise HTTPException(status_code=400, detail="Invalid heap index")
 
     if move.remove < 1 or move.remove > game_state.heaps[move.heap]:
-        raise HTTPException(400, "Invalid remove count")
+        raise HTTPException(status_code=400, detail="Invalid remove count")
 
     new_heaps = apply_move(game_state.heaps, (move.heap, move.remove))
     game_state = NimState(new_heaps, -1)
@@ -118,7 +121,7 @@ def ai_move():
     global game_state
 
     if game_state is None or game_state.player_to_move != -1:
-        raise HTTPException(400, "Not AI turn")
+        raise HTTPException(status_code=400, detail="Not AI turn")
 
     move = choose_ai_move(game_state.heaps)
     new_heaps = apply_move(game_state.heaps, move)
@@ -127,13 +130,16 @@ def ai_move():
     winner = "AI" if is_terminal(new_heaps) else None
 
     return {
-        "move": {"heap": move[0], "remove": move[1]},
+        "move": {
+            "heap": move[0],
+            "remove": move[1]
+        },
         "new_heaps": new_heaps,
         "winner": winner
     }
 
 # =======================
-# RUN LOCAL (OPTIONAL)
+# RUN LOCAL
 # =======================
 
 if __name__ == "__main__":
