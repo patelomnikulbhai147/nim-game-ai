@@ -1,13 +1,59 @@
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uuid
-from typing import Dict, List
 
-from game import NimGameState, MoveRequest
-from ai import get_best_move, is_terminal, make_move
+# =======================
+# SIMPLE GAME LOGIC
+# =======================
 
-app = FastAPI(title="Nim Game VS AI API")
+class NimState:
+    def __init__(self, heaps, player_to_move):
+        self.heaps = heaps
+        self.player_to_move = player_to_move  # 1 = human, -1 = AI
+
+def is_terminal(heaps):
+    return all(h == 0 for h in heaps)
+
+def apply_move(heaps, move):
+    heap, remove = move
+    new_heaps = heaps.copy()
+    new_heaps[heap] -= remove
+    return new_heaps
+
+def choose_ai_move(heaps):
+    # Simple AI: remove 1 from first non-empty heap
+    for i, h in enumerate(heaps):
+        if h > 0:
+            return (i, 1)
+    return (0, 0)
+
+# =======================
+# GLOBAL STATE
+# =======================
+
+game_state: Optional[NimState] = None
+
+class Move(BaseModel):
+    heap: int
+    remove: int
+
+# =======================
+# LIFESPAN (INIT GAME)
+# =======================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global game_state
+    game_state = NimState([5, 3, 7], 1)
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+# =======================
+# CORS (IMPORTANT)
+# =======================
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,98 +63,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session storage
-sessions: Dict[str, NimGameState] = {}
+# =======================
+# ROUTES
+# =======================
 
-class NewGameRequest(BaseModel):
-    difficulty: str = 'medium'
-    initial_heaps: List[int] = [3, 4, 5]
+@app.get("/")
+def home():
+    return {"message": "Nim Game API running 🚀"}
 
-@app.post("/new_game")
-def create_new_game(req: NewGameRequest):
-    session_id = str(uuid.uuid4())
-    state = NimGameState(
-        heaps=req.initial_heaps,
-        player_to_move="human",
-        difficulty=req.difficulty,
-        terminal=False,
-        winner=None
-    )
-    sessions[session_id] = state
-    return {"session_id": session_id, "state": state}
+# 👉 GET STATE
+@app.get("/state")
+def get_state():
+    if game_state is None:
+        raise HTTPException(404, "No game")
 
-@app.get("/state/{session_id}")
-def get_state(session_id: str):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
-
-@app.post("/human_move/{session_id}")
-def human_move(session_id: str, move: MoveRequest):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    state = sessions[session_id]
-    
-    if state.terminal:
-        raise HTTPException(status_code=400, detail="Game already over")
-    
-    if state.player_to_move != "human":
-        raise HTTPException(status_code=400, detail="Not human's turn")
-        
-    heap_idx = move.heap_index
-    if heap_idx < 0 or heap_idx >= len(state.heaps):
-        raise HTTPException(status_code=400, detail="Invalid heap")
-        
-    if move.remove_count < 1 or move.remove_count > state.heaps[heap_idx]:
-        raise HTTPException(status_code=400, detail="Invalid remove count")
-        
-    # Apply move
-    state.heaps = make_move(state.heaps, (heap_idx, move.remove_count))
-    
-    if is_terminal(state.heaps):
-        state.terminal = True
-        state.winner = "human"
-    else:
-        state.player_to_move = "ai"
-        
-    return {"status": "success", "state": state}
-
-@app.post("/ai_move/{session_id}")
-def ai_move(session_id: str):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-        
-    state = sessions[session_id]
-    
-    if state.terminal:
-        raise HTTPException(status_code=400, detail="Game already over")
-        
-    if state.player_to_move != "ai":
-        raise HTTPException(status_code=400, detail="Not AI's turn")
-        
-    best_move = get_best_move(state.heaps, state.difficulty)
-    if best_move is None:
-        raise HTTPException(status_code=500, detail="No valid moves for AI")
-        
-    state.heaps = make_move(state.heaps, best_move)
-    
-    if is_terminal(state.heaps):
-        state.terminal = True
-        state.winner = "ai"
-    else:
-        state.player_to_move = "human"
-        
     return {
-        "move": {"heap_index": best_move[0], "remove_count": best_move[1]},
-        "state": state
+        "heaps": game_state.heaps,
+        "player_to_move": "human" if game_state.player_to_move == 1 else "ai",
+        "terminal": is_terminal(game_state.heaps)
     }
-from fastapi.middleware.cors import CORSMiddleware
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 👉 NEW GAME
+@app.post("/new_game")
+def new_game():
+    global game_state
+    game_state = NimState([5, 3, 7], 1)
+    return {"message": "New game started", "heaps": game_state.heaps}
+
+# 👉 HUMAN MOVE
+@app.post("/human_move")
+def human_move(move: Move):
+    global game_state
+
+    if game_state is None or game_state.player_to_move != 1:
+        raise HTTPException(400, "Not human turn")
+
+    if move.heap < 0 or move.heap >= len(game_state.heaps):
+        raise HTTPException(400, "Invalid heap")
+
+    if move.remove < 1 or move.remove > game_state.heaps[move.heap]:
+        raise HTTPException(400, "Invalid remove count")
+
+    new_heaps = apply_move(game_state.heaps, (move.heap, move.remove))
+    game_state = NimState(new_heaps, -1)
+
+    return {
+        "new_heaps": new_heaps,
+        "ai_turn_next": True
+    }
+
+# 👉 AI MOVE
+@app.get("/ai_move")
+def ai_move():
+    global game_state
+
+    if game_state is None or game_state.player_to_move != -1:
+        raise HTTPException(400, "Not AI turn")
+
+    move = choose_ai_move(game_state.heaps)
+    new_heaps = apply_move(game_state.heaps, move)
+    game_state = NimState(new_heaps, 1)
+
+    winner = "AI" if is_terminal(new_heaps) else None
+
+    return {
+        "move": {"heap": move[0], "remove": move[1]},
+        "new_heaps": new_heaps,
+        "winner": winner
+    }
+
+# =======================
+# RUN LOCAL (OPTIONAL)
+# =======================
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
