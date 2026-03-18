@@ -103,3 +103,12 @@ def ai_move(session_id: str):
         "move": {"heap_index": best_move[0], "remove_count": best_move[1]},
         "state": state
     }
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
